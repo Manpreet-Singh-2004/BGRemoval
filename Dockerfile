@@ -1,5 +1,5 @@
 # 1. Use a lightweight, official Python base image
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 # 2. Prevent Python from writing .pyc files and buffer issues
 ENV PYTHONDONTWRITEBYTECODE=1
