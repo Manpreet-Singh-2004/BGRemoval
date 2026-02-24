@@ -6,17 +6,25 @@ from imagekitio import ImageKit
 import io
 import os
 
-app = FastAPI(title="Canadian Cart BG Remover & Uploader")
+# 1. FAIL-FAST STARTUP CHECK
+# If AWS fails to inject the ImageKit key, the server crashes immediately 
+# rather than failing silently when a user tries to upload.
+IMAGEKIT_PRIVATE_KEY = os.getenv("IMAGEKIT_PRIVATE_KEY")
+if not IMAGEKIT_PRIVATE_KEY:
+    raise RuntimeError("CRITICAL: IMAGEKIT_PRIVATE_KEY environment variable is missing.")
 
-# 1. SECRETS
 INTERNAL_API_KEY = os.getenv("INTERNAL_API_KEY", "super-secret-key-change-in-production")
 header_scheme = APIKeyHeader(name="X-Service-Key")
 
-# 2. INITIALIZE IMAGEKIT 
-# v5 syntax strictly requires only the private key for server-side auth
-imagekit = ImageKit(
-    private_key=os.getenv("IMAGEKIT_PRIVATE_KEY")
-)
+imagekit = ImageKit(private_key=IMAGEKIT_PRIVATE_KEY)
+
+app = FastAPI(title="Canadian Cart BG Remover & Uploader")
+
+# 2. THE AWS HEALTH CHECK
+# The Load Balancer will ping this constantly. DO NOT protect it with a key.
+@app.get("/health")
+def health_check():
+    return {"status": "healthy"}
 
 def verify_internal_service(api_key: str = Depends(header_scheme)):
     if api_key != INTERNAL_API_KEY:
@@ -32,26 +40,29 @@ def remove_image_background(
     is_authorized: bool = Depends(verify_internal_service)
 ):
     try:
-        # 1. Validate File
         if not file.content_type.startswith("image/"):
             raise HTTPException(status_code=400, detail="File must be an image.")
 
-        # 2. Process Image (rembg)
+        # Process Image 
         image_bytes = file.file.read()
         input_image = Image.open(io.BytesIO(image_bytes))
         output_image = remove(input_image)
 
-        # 3. Convert output back to raw bytes (No Base64 needed!)
+        # Convert output to PNG bytes
         img_byte_arr = io.BytesIO()
         output_image.save(img_byte_arr, format='PNG')
 
-        # 4. Upload to ImageKit using direct bytes
+        # 3. FIX THE EXTENSION BUG
+        # Strip the old extension (.jpg, .jpeg) and force .png
+        original_name_without_ext = file.filename.rsplit('.', 1)[0]
+        safe_filename = f"nobg_{original_name_without_ext}.png"
+
+        # Upload to ImageKit
         upload_response = imagekit.files.upload(
             file=img_byte_arr.getvalue(),
-            file_name=f"nobg_{file.filename}",
+            file_name=safe_filename,
         )
 
-        # 5. Return the direct URL
         return {
             "success": True,
             "url": upload_response.url,
